@@ -1,0 +1,178 @@
+---
+title: "hw2"
+author: "jingshan huang jhuang456@wisc.edu"
+date: "2020/9/29"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+To do this task, I take three steps as following  
+**step 1,data processing.**  
+The key part is exponential smoothing and the main goal is to clean the noise as much as possible and cut those 'outliers'.    
+At first,I clean bad observations with 'and_mask' changing their values to the nearest good observation. Deleteing will change the shape of data.  
+And then, I clean somepoints with exaggerated value. It's helpful for the next step (smoothing).For very large values, make sure they won't exceed some limit (In my method I set the max_lim equal to the fifth largest number). And since 'flux' is theoretically non-negative, for very small values, set min_limit = max(the fifth smallest number, -2)  
+Finally, and the most important step is doing exponential smoothing. I choose the parameter a=0.05 so that some drastic mutations will be alleviated but not too small so that it can still catch the trend. And smoothing data is easier to find troughs then raw data with a lot of noise. 
+
+```{r,echo = FALSE}
+options(warn =-1)
+library('FITSio')
+zhishu = function(y,a){
+  n = length(y) 
+  
+  y1 = numeric(n)
+  y1[1] = y[1]
+  for(i in 2:n){                
+    y1[i] = a*y[i]+(1-a)*y1[i-1]
+  }
+  return(y1)
+}
+chafen = function(y){
+  n = length(y)
+  target = c(0,y[2:n] - y[1:(n-1)])
+  return(target)
+}
+zengjian = function(diff_y){
+  return(sign(diff_y))
+}
+bogu_omit_close = function(flux_sign,flux,closed = 5){
+  n = length(flux_sign)
+  mean_value = quantile(flux,0.3)
+  last = -closed
+  is_bogu = vector(mode = 'logical',length =n)
+  for(i in (closed+1):(n-1)){
+    if(!any(is_bogu[(i-closed):(i-1)]) &flux[i]<mean_value &flux_sign[i]==-1 & flux_sign[i+1]==1){
+      is_bogu[i] = TRUE
+    }
+  }
+  return(is_bogu)
+}
+process_mask = function(mask){
+  n = length(mask)
+  target = numeric(n)
+  target[1] = mask[1] -1
+  for(i in 2:n){
+    j=i
+    while(mask[j]-mask[j-1]==1){
+      j = j-1
+      if(j==1){
+        break
+      }
+    }
+    target[i] = mask[j] - 1
+  }
+  return(target)
+}
+process_data = function(dataset,islyman = 0){
+  if(islyman == 1){
+    dataset['zhishu'] = zhishu(dataset$FLUX,0.05)
+  }else{
+    #dataset = dataset[dataset$and_mask==0,]
+    if(any(dataset$and_mask!=0)){
+      #cat('yes,i have processed')
+      mask = which(dataset$and_mask!=0)
+      pmask = process_mask(mask)
+      dataset$flux[mask] = dataset$flux[pmask]
+    }
+    n = length(dataset$flux)
+    flux_sorted = sort(dataset$flux)
+    flux_max5 = flux_sorted[n-4]
+    flux_min5 = max(flux_sorted[5],-2)
+    dataset$flux[dataset$flux>flux_max5] = flux_max5
+    dataset$flux[dataset$flux<flux_min5] = flux_min5
+    
+    dataset['zhishu'] = zhishu(dataset$flux,0.05)
+    #dataset['zhishu2'] = zhishu(dataset$flux,0.05)
+  }
+  dataset['diff'] = chafen(dataset$zhishu)
+  dataset['sign_diff'] = zengjian(dataset$diff)
+  dataset['isbogu'] = bogu_omit_close(dataset$sign_diff,dataset$zhishu,closed = 10)
+  return(dataset)
+}
+lyman = readFrameFromFITS('cB58_Lyman_break.fit')
+len_lyman = length(lyman$FLUX)
+ex1 = readFrameFromFITS('data/spec-1353-53083-0579.fits')
+
+lyman = process_data(lyman,islyman = 1)
+ex1 = process_data(ex1)
+
+plot(ex1$flux,type = 'l',col='blue',lwd = 3,ylim =c(-3,5),ylab = 'flux',xlab ='index',main = 'compare flux after preprocessing')
+shift = 520
+lines(x = c(shift:(shift+len_lyman-1)),lyman$FLUX*2.5-2,col = 'red',type = 'l',lwd = 3)
+legend(x= 'topleft',legend = c('example','CB58'),col = c('blue','red'),lty=c(1,1))
+
+plot(ex1$zhishu,type = 'l',col='blue',lwd = 3,ylim =c(-2,3),ylab = 'exp smoothing',xlab ='index',main = 'exponential smoothing result')
+shift = 520
+lines(x = c(shift:(shift+len_lyman-1)),lyman$zhishu*2.5-2,col = 'red',type = 'l',lwd = 3)
+legend(x= 'topleft',legend = c('example','CB58'),col = c('blue','red'),lty=c(1,1))
+```
+
+**step 2,find troughs**  
+Based on the backgroud information, I realized that the first trough in CB58 is very important for locating.
+One of the most hardest part in this task is trying thousands of times to find out the best matched part in all example.Obviouly it works, however, it is computationally expensive especially when we need to deal with larger scale dataset later. So my idea is to find all the troughs in one EXAMPLE, I can go through them to alignment the position.  
+```{r,echo = FALSE}
+x = c(1:len_lyman)
+plot(x,lyman$zhishu,type = 'l',ylab = 'exp smoothing',xlab ='index')
+points(x[lyman$isbogu == 1],lyman$zhishu[lyman$isbogu == 1],col='red',lwd = 3)
+points(246,lyman$zhishu[246],col='blue',lwd = 3,pch = 8,cex = 2)
+
+len_ex1 = length(ex1$flux)
+x = c(1:len_ex1)
+plot(x,ex1$zhishu,type = 'l',xlab= 'index',ylab='exp smoothing')
+points(x[ex1$isbogu == 1],ex1$zhishu[ex1$isbogu == 1],col='red',lwd = 3)
+shift = 28
+lines(x = c(shift:(shift+len_lyman-1)),lyman$zhishu*2.5-2,col = 'green',type = 'l',lwd = 1)
+abline(v = 274,col = 'green')
+shift = 522
+lines(x = c(shift:(shift+len_lyman-1)),lyman$zhishu*2.5-2,col = 'pink',type = 'l',lwd = 1)
+abline(v = 768,col = 'pink')
+```
+
+**step3, Pearson correlation**  
+Pearson correlation is aim to find the linear correlation between two data(Y = aX + b), which is appropriate for this project. And it is fast, reliable to deal with larger scale of datasets.  
+So in my hw2.csv, after tring every possible locations,the '0distance' is just the best correlation.   
+And below is the highest five.
+```{r}
+resultdata = read.csv('hw2.csv')
+tail(resultdata,5)
+```
+**Let do some plots(with some personal scaling)**
+```{r,echo=FALSE}
+filenames = resultdata$spectrumID[c(98,99,100)]
+points = resultdata$i[c(98,99,100)]
+up = c(6,3,-2)
+for(i in 1:3){
+  file = filenames[i]
+  point = points[i]
+  dataset = readFrameFromFITS(paste('data/',file,sep=''));
+  dataset = process_data(dataset)
+  plot(dataset$flux,type = 'l',col='blue',lwd = 3,ylab = 'flux',xlab ='index',main = file)
+  shift = point
+  lines(x = c(shift:(shift+len_lyman-1)),lyman$FLUX*2.5+up[i],col = 'red',type = 'l',lwd = 3)
+  legend(x= 'bottomright',legend = c(file,'CB58'),col = c('blue','red'),lty=c(1,1))
+}
+```
+   
+During these process,I do meet some difficulties. One is to find those troughs.We have to make sure we won't miss the true troughs and reduce the number of candidates. The quantile number helps me a lot. And I set a omit_close parameter to avoid too much points gather too closely.   
+And I still want to came up with a idea to use the value of the first trough and the following peak.This is what I didn't do.
+
+Thanks for reading.
+
+Jingshan
+
+
+
+
+
+
+
+
+
+
+
+
+
